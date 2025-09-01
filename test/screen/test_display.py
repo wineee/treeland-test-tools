@@ -48,11 +48,14 @@ Treeland 显示器配置测试脚本
 """
 
 import subprocess
-import re
 import random
 import time
 import argparse
+import json
 from typing import Dict, List, NamedTuple
+
+# 全局调试模式开关
+DEBUG_MODE = False
 
 class DisplayMode(NamedTuple):
     """表示显示器支持的显示模式
@@ -90,7 +93,7 @@ class Display:
         self.adaptive_sync = False
 
 def parse_wlr_randr_output() -> Dict[str, Display]:
-    """解析 wlr-randr 命令的输出，获取显示器信息
+    """解析 wlr-randr --json 命令的输出，获取显示器信息
 
     Returns:
         Dict[str, Display]: 显示器名称到显示器对象的映射字典
@@ -101,94 +104,59 @@ def parse_wlr_randr_output() -> Dict[str, Display]:
             print(f"显示器 {name} 支持 {len(display.modes)} 种显示模式")
     """
     displays = {}
-    current_display = None
 
-    output = subprocess.check_output(['wlr-randr'], text=True)
-    print("\n=== 调试：原始输出 ===")
-    print(output)
-    print("=== 调试：开始解析 ===")
-    
-    for line in output.split('\n'):
-        if not line.startswith(' '):  # 新显示器
-            if '"' in line:
-                name = line.split('"')[0].strip()
-                print(f"\n找到显示器: {name}")
-                current_display = Display(name)
-                displays[name] = current_display
-        elif current_display:  # 处理显示器的属性
-            line = line.strip()
-            if line.startswith('Modes:'):
-                print("开始解析显示模式列表")
-                continue
-            elif line.startswith(('    ')):  # 解析模式
-                print(f"正在解析模式行: {line}")
-                # 使用非贪婪匹配来处理前导空格
-                mode_match = re.match(r'\s*(\d+)x(\d+) px,\s*([\d.]+) Hz(\s+\([^)]*\))?', line)
-                if mode_match:
-                    width = int(mode_match.group(1))
-                    height = int(mode_match.group(2))
-                    refresh = float(mode_match.group(3))
-                    flags = mode_match.group(4) or ""
-                    print(f"  匹配组: width={width}, height={height}, refresh={refresh}, flags={flags}")
-                    
-                    mode = DisplayMode(width, height, refresh)
-                    current_display.modes.append(mode)
-                    print(f"  解析成功: {width}x{height}@{refresh}Hz {flags}")
-                    
-                    # 如果是当前模式，记录下来
-                    if "current" in flags:
-                        current_display.current_mode = mode
-                        print("  这是当前模式")
-                else:
-                    print(f"  无法解析该行: {line}")
-            elif 'Transform:' in line:
-                current_display.transform = line.split(':')[1].strip()
-                print(f"设置 transform: {current_display.transform}")
-            elif 'Scale:' in line:
-                current_display.scale = float(line.split(':')[1].strip())
-                print(f"设置 scale: {current_display.scale}")
-            elif 'Enabled:' in line:
-                current_display.enabled = line.split(':')[1].strip() == 'yes'
-                print(f"设置 enabled: {current_display.enabled}")
-
-    print("\n=== 调试：解析结果 ===")
-    for name, display in displays.items():
-        print(f"\n显示器 {name}:")
-        print(f"支持的模式数量: {len(display.modes)}")
-        print(f"Transform: {display.transform}")
-        print(f"Scale: {display.scale}")
-        print(f"Enabled: {display.enabled}")
-        if display.current_mode:
-            print(f"当前模式: {display.current_mode.width}x{display.current_mode.height}@{display.current_mode.refresh_rate}Hz")
+    try:
+        output = subprocess.check_output(['wlr-randr', '--json'], text=True)
+        data = json.loads(output)
+        
+        if DEBUG_MODE:
+            print(f"\n=== 调试：JSON 数据 ===")
+            print(json.dumps(data, indent=2, ensure_ascii=False))
+        
+        for display_data in data:
+            name = display_data['name']
+            display = Display(name)
+            
+            # 解析基本信息
+            display.enabled = display_data.get('enabled', True)
+            display.transform = display_data.get('transform', 'normal')
+            display.scale = display_data.get('scale', 1.0)
+            display.adaptive_sync = display_data.get('adaptive_sync', False)
+            
+            # 解析位置信息
+            if 'position' in display_data:
+                pos = display_data['position']
+                display.position = (pos.get('x', 0), pos.get('y', 0))
+            
+            # 解析显示模式
+            for mode_data in display_data.get('modes', []):
+                mode = DisplayMode(
+                    width=mode_data['width'],
+                    height=mode_data['height'],
+                    refresh_rate=mode_data['refresh']
+                )
+                display.modes.append(mode)
+                
+                # 记录当前模式
+                if mode_data.get('current', False):
+                    display.current_mode = mode
+            
+            displays[name] = display
+            if DEBUG_MODE:
+                print(f"解析显示器 {name}: {len(display.modes)} 种模式")
+                print(f"  当前模式: {display.current_mode}")
+                print(f"  Transform: {display.transform}")
+                print(f"  Scale: {display.scale}")
+                print(f"  Position: {display.position}")
+            
+    except subprocess.CalledProcessError as e:
+        print(f"错误: 无法执行 wlr-randr --json: {e}")
+    except json.JSONDecodeError as e:
+        print(f"错误: JSON 解析失败: {e}")
+    except Exception as e:
+        print(f"错误: 解析显示器信息时出错: {e}")
 
     return displays
-
-def apply_random_config(display_name: str, display: Display):
-    commands = []
-    
-    # 随机选择一个模式
-    if display.modes:
-        mode = random.choice(display.modes)
-        commands.append(f'--mode {mode.width}x{mode.height}@{mode.refresh}Hz')
-    
-    # 随机选择一个变换
-    transforms = ['normal', '90', '180', '270', 'flipped', 
-                 'flipped-90', 'flipped-180', 'flipped-270']
-    transform = random.choice(transforms)
-    commands.append(f'--transform {transform}')
-    
-    # 随机缩放 (0.5 到 2.0 之间)
-    scale = round(random.uniform(0.5, 2.0), 2)
-    commands.append(f'--scale {scale}')
-    
-    # 随机开关自适应同步
-    adaptive_sync = random.choice(['enabled', 'disabled'])
-    commands.append(f'--adaptive-sync {adaptive_sync}')
-    
-    # 执行命令
-    full_command = ['wlr-randr', '--output', display_name] + ' '.join(commands).split()
-    print(f"执行命令: {' '.join(full_command)}")
-    subprocess.run(full_command)
 
 def run_command_with_check(command: List[str], description: str = "") -> bool:
     """执行命令并检查结果
@@ -259,15 +227,15 @@ def test_all_modes(display_name: str, display: Display, interval: float):
 
     for mode in display.modes:
         command = ['wlr-randr', '--output', display_name,
-                  f'--mode {mode.width}x{mode.height}@{mode.refresh}Hz']
+                  '--mode', f'{mode.width}x{mode.height}@{mode.refresh_rate}']
         
-        if run_command_with_check(command, f"设置模式 {mode.width}x{mode.height}@{mode.refresh}Hz"):
+        if run_command_with_check(command, f"设置模式 {mode.width}x{mode.height}@{mode.refresh_rate}Hz"):
             time.sleep(1)  # 等待模式切换
             if verify_mode(display_name, mode):
                 successful_modes.append(mode)
-                print(f"成功应用模式: {mode.width}x{mode.height}@{mode.refresh}Hz")
+                print(f"成功应用模式: {mode.width}x{mode.height}@{mode.refresh_rate}Hz")
             else:
-                print(f"警告: 模式可能未正确应用: {mode.width}x{mode.height}@{mode.refresh}Hz")
+                print(f"警告: 模式可能未正确应用: {mode.width}x{mode.height}@{mode.refresh_rate}Hz")
         
         time.sleep(interval)
     
@@ -373,9 +341,14 @@ def test_all_scales(display_name: str, interval: float):
 
 def main():
     parser = argparse.ArgumentParser(description='测试显示器配置')
-    parser.add_argument('--interval', type=float, default=1.0,
+    parser.add_argument('--interval', type=float, default=5.0,
                     help='更改配置的时间间隔（秒，支持小数）')
+    parser.add_argument('--debug', action='store_true',
+                    help='启用详细的调试输出')
     args = parser.parse_args()
+
+    global DEBUG_MODE
+    DEBUG_MODE = args.debug
 
     try:
         displays = parse_wlr_randr_output()
