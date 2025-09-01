@@ -4,6 +4,7 @@ Treeland 应用程序压力测试工具
 
 这个脚本用于测试 Wayland 合成器对频繁启动/关闭应用程序的处理能力。
 它会从预定义的应用程序列表中随机选择程序启动，可以设置启动间隔和最大进程数。
+支持监听treeland合成器状态，如果treeland意外退出则自动停止测试。
 """
 
 import subprocess
@@ -14,76 +15,93 @@ import argparse
 import sys
 import os
 from typing import List, Dict, Optional
-import json
 import psutil
 
 class AppTest:
-    def __init__(self):
+    def __init__(self, monitor_treeland: bool = True):
         self.running_processes: Dict[int, subprocess.Popen] = {}
+        self.monitor_treeland = monitor_treeland
+        self.treeland_pid = None
+        self.treeland_crashed = False
         self.app_list = [
-            {
-                "name": "foot",
-                "command": "foot",
-                "category": "terminal"
-            },
-            {
-                "name": "deepin-terminal",
-                "command": "deepin-terminal",
-                "category": "terminal"
-            },
-            {
-                "name": "deepin-compressor",
-                "command": "deepin-compressor",
-                "category": "utility"
-            },
-            {
-                "name": "xterm",
-                "command": "xterm",
-                "category": "terminal"
-            },
-            {
-                "name": "d-spy",
-                "command": "d-spy",
-                "category": "development"
-            }
+            "foot",
+            "deepin-terminal",
+            "deepin-compressor",
+            "xterm",
+            "d-spy"
         ]
 
-    def load_app_list(self, file_path: str) -> None:
-        """从JSON文件加载应用程序列表"""
+    def find_treeland_process(self) -> Optional[int]:
+        """查找treeland进程"""
         try:
-            with open(file_path, 'r') as f:
-                self.app_list = json.load(f)
-        except Exception as e:
-            print(f"警告: 无法加载应用程序列表文件 {file_path}: {e}")
-            print("使用默认应用程序列表")
+            for proc in psutil.process_iter(['pid', 'name']):
+                if proc.info['name'] == 'treeland':
+                    return proc.info['pid']
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+        return None
 
-    def save_app_list(self, file_path: str) -> None:
-        """保存应用程序列表到JSON文件"""
+    def check_treeland_status(self) -> bool:
+        """检查treeland是否还在运行"""
+        if not self.monitor_treeland:
+            return True
+        
+        if self.treeland_crashed:
+            return True  # 崩溃后继续运行，不停止测试
+        
+        if self.treeland_pid is None:
+            self.treeland_pid = self.find_treeland_process()
+            if self.treeland_pid is None:
+                print("警告: 未找到treeland进程")
+                return True
+            print(f"找到treeland进程 PID: {self.treeland_pid}")
+        
         try:
-            with open(file_path, 'w') as f:
-                json.dump(self.app_list, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"错误: 无法保存应用程序列表到 {file_path}: {e}")
+            proc = psutil.Process(self.treeland_pid)
+            is_running = proc.is_running()
+            if not is_running and not self.treeland_crashed:
+                self.treeland_crashed = True
+                print(f"\n🔥 TREELAND 崩溃检测 🔥")
+                print(f"时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+                print(f"treeland PID {self.treeland_pid} 已退出")
+                print(f"当前运行的应用程序: {len(self.running_processes)} 个")
+                print(f"应用程序PID列表: {list(self.running_processes.keys())}")
+                print(f"注意: 应用程序进程保持运行状态，等待开发者处理")
+                print(f"提示: 可以手动使用 kill 命令清理进程，或重启treeland继续测试")
+                print("=" * 60)
+            return True
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            if not self.treeland_crashed:
+                self.treeland_crashed = True
+                print(f"\n🔥 TREELAND 崩溃检测 🔥")
+                print(f"时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+                print(f"treeland PID {self.treeland_pid} 已退出")
+                print(f"当前运行的应用程序: {len(self.running_processes)} 个")
+                print(f"应用程序PID列表: {list(self.running_processes.keys())}")
+                print(f"注意: 应用程序进程保持运行状态，等待开发者处理")
+                print(f"提示: 可以手动使用 kill 命令清理进程，或重启treeland继续测试")
+                print("=" * 60)
+            return True
 
-    def launch_app(self, app: dict) -> Optional[subprocess.Popen]:
+    def launch_app(self, app_command: str) -> Optional[subprocess.Popen]:
         """启动应用程序
 
         Args:
-            app: 应用程序信息字典
+            app_command: 应用程序命令
 
         Returns:
             subprocess.Popen: 启动的进程对象，如果启动失败则返回None
         """
         try:
-            print(f"启动 {app['name']}...")
+            print(f"启动 {app_command}...")
             process = subprocess.Popen(
-                app['command'].split(),
+                app_command.split(),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL
             )
             return process
         except Exception as e:
-            print(f"错误: 无法启动 {app['name']}: {e}")
+            print(f"错误: 无法启动 {app_command}: {e}")
             return None
 
     def cleanup(self) -> None:
@@ -143,12 +161,15 @@ class AppTest:
                 if duration > 0 and time.time() - start_time > duration:
                     break
 
+                # 检查treeland状态（仅记录崩溃，不停止测试）
+                self.check_treeland_status()
+
                 # 检查和清理进程
                 self.check_processes(max_processes)
 
                 # 随机选择并启动一个应用
-                app = random.choice(self.app_list)
-                process = self.launch_app(app)
+                app_command = random.choice(self.app_list)
+                process = self.launch_app(app_command)
                 if process:
                     self.running_processes[process.pid] = process
                     launches += 1
@@ -164,7 +185,8 @@ class AppTest:
             print(f"\n测试结束！")
             print(f"运行时间: {elapsed:.1f} 秒")
             print(f"启动次数: {launches}")
-            print(f"平均启动间隔: {elapsed/launches:.2f} 秒")
+            if launches > 0:
+                print(f"平均启动间隔: {elapsed/launches:.2f} 秒")
 
 def main():
     parser = argparse.ArgumentParser(description='Treeland 应用程序压力测试工具')
@@ -174,13 +196,11 @@ def main():
                     help='最大同时运行的进程数，默认10个')
     parser.add_argument('--duration', type=int, default=0,
                     help='测试持续时间（秒），默认0表示持续运行直到中断')
-    parser.add_argument('--app-list', type=str,
-                    help='应用程序列表配置文件的路径（JSON格式）')
+    parser.add_argument('--no-monitor-treeland', action='store_true',
+                    help='禁用treeland状态监控（默认启用监控）')
     args = parser.parse_args()
 
-    tester = AppTest()
-    if args.app_list:
-        tester.load_app_list(args.app_list)
+    tester = AppTest(monitor_treeland=not args.no_monitor_treeland)
 
     print("按 Ctrl+C 停止测试")
     print(f"启动间隔: {args.interval} 秒")
@@ -189,7 +209,11 @@ def main():
         print(f"测试时间: {args.duration} 秒")
     else:
         print("测试时间: 持续运行直到中断")
-    print(f"应用程序列表: {[app['name'] for app in tester.app_list]}")
+    if not args.no_monitor_treeland:
+        print("监听treeland状态: 启用（崩溃时保持进程运行）")
+    else:
+        print("监听treeland状态: 禁用")
+    print(f"应用程序列表: {tester.app_list}")
     
     tester.run_test(args.interval, args.max_processes, args.duration)
 
