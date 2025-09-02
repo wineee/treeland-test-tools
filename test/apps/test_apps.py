@@ -66,8 +66,9 @@ class AppTest:
                 print(f"treeland PID {self.treeland_pid} 已退出")
                 print(f"当前运行的应用程序: {len(self.running_processes)} 个")
                 print(f"应用程序PID列表: {list(self.running_processes.keys())}")
-                print(f"注意: 应用程序进程保持运行状态，等待开发者处理")
-                print(f"提示: 可以手动使用 kill 命令清理进程，或重启treeland继续测试")
+                print(f"脚本将暂停运行，不再启动新应用程序")
+                print(f"应用程序进程保持运行状态，等待开发者处理")
+                print(f"提示: 按 Ctrl+C 退出脚本（不会清理应用程序）")
                 print("=" * 60)
             return True
         except (psutil.NoSuchProcess, psutil.AccessDenied):
@@ -78,8 +79,9 @@ class AppTest:
                 print(f"treeland PID {self.treeland_pid} 已退出")
                 print(f"当前运行的应用程序: {len(self.running_processes)} 个")
                 print(f"应用程序PID列表: {list(self.running_processes.keys())}")
-                print(f"注意: 应用程序进程保持运行状态，等待开发者处理")
-                print(f"提示: 可以手动使用 kill 命令清理进程，或重启treeland继续测试")
+                print(f"脚本将暂停运行，不再启动新应用程序")
+                print(f"应用程序进程保持运行状态，等待开发者处理")
+                print(f"提示: 按 Ctrl+C 退出脚本（不会清理应用程序）")
                 print("=" * 60)
             return True
 
@@ -161,8 +163,19 @@ class AppTest:
                 if duration > 0 and time.time() - start_time > duration:
                     break
 
-                # 检查treeland状态（仅记录崩溃，不停止测试）
+                # 检查treeland状态
                 self.check_treeland_status()
+                
+                # 如果treeland已崩溃，暂停脚本运行
+                if self.treeland_crashed:
+                    print("treeland已崩溃，脚本暂停运行，应用程序保持打开状态...")
+                    print("按 Ctrl+C 退出脚本")
+                    try:
+                        while True:
+                            time.sleep(1)  # 无限等待，直到用户按Ctrl+C
+                    except KeyboardInterrupt:
+                        print("\n收到中断信号，退出脚本但不清理应用程序...")
+                        return  # 直接返回，不执行cleanup
 
                 # 检查和清理进程
                 self.check_processes(max_processes)
